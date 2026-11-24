@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Làng Trung Ý vs Trung Thành - 3D RTS</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: linear-gradient(to bottom, #87ceeb, #e0f7fa); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; user-select: none; }
+        canvas { display: block; position: fixed; top: 0; left: 0; }
+        
+        #ui {
+            position: absolute; top: 15px; left: 15px; color: #fff; z-index: 10;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.8); pointer-events: none;
+            background: rgba(15, 23, 42, 0.7); padding: 15px 20px; border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1); backdrop-filter: blur(10px);
+            font-size: 14px; line-height: 1.8; min-width: 280px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+        #ui b { color: #ffcc00; }
+        .team-red { color: #ff5252; font-weight: bold; } 
+        .team-blue { color: #448aff; font-weight: bold; }
+        
+        .stat-bar { height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; margin-top: 6px; overflow: hidden; }
+        .stat-fill { height: 100%; transition: width 0.3s ease; }
+        .hp-fill { background: linear-gradient(90deg, #ff5252, #ff9800); }
+        .spawn-fill { background: linear-gradient(90deg, #69f0ae, #00bfa5); }
+
+        #minimap { 
+            position: absolute; bottom: 20px; right: 20px; width: 180px; height: 180px; 
+            border: 2px solid rgba(255, 255, 255, 0.2); background: rgba(0, 0, 0, 0.8); 
+            z-index: 10; border-radius: 12px; overflow: hidden; backdrop-filter: blur(5px);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+
+        #winScreen { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
+            background: radial-gradient(circle at center, rgba(20, 20, 40, 0.95) 0%, rgba(0,0,0,0.98) 100%); 
+            display: none; justify-content: center; align-items: center; flex-direction: column; 
+            z-index: 100; color: white; text-align: center;
+        }
+        #winScreen h1 { 
+            font-size: 4rem; margin: 0; text-shadow: 0 0 20px currentColor; 
+            letter-spacing: 2px; font-family: 'Impact', sans-serif;
+        }
+        #winScreen .sub { font-size: 1.2rem; margin-bottom: 30px; color: #aaa; }
+        #winScreen button { 
+            padding: 14px 40px; font-size: 1.2rem; background: linear-gradient(135deg, #ffcc00, #ff9900); 
+            border: none; border-radius: 50px; cursor: pointer; color: #1a1a2e; 
+            font-weight: bold; transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(255, 204, 0, 0.4);
+        }
+        #winScreen button:hover { transform: translateY(-3px); box-shadow: 0 6px 20px rgba(255, 204, 0, 0.6); }
+        
+        .title-game { color: #ffcc00; font-size: 1.1rem; letter-spacing: 1px; margin-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div class="title-game">⚔️ CHIẾN TRƯỜNG TRUNG Ý</div>
+        <div>Phe: <span class="team-red">🔴 Làng Trung Ý (Bạn)</span> vs <span class="team-blue">🔵 Làng Trung Thành (Địch)</span></div>
+        <div>Nhà chính: <span id="hpRed">100%</span> vs <span id="hpBlue">100%</span></div>
+        <div>Lính: <span id="countRed">0</span> / <span id="maxUnits">50</span> | Địch: <span id="countBlue">0</span></div>
+        <div>WASD/Mũi tên: Di chuyển cam | Lăn chuột: Zoom | Click Trái: Chọn | Click Phải: Ra lệnh</div>
+        <div class="stat-bar"><div id="spawnBarRed" class="stat-fill spawn-fill" style="width:0%"></div></div>
+    </div>
+    <canvas id="minimap"></canvas>
+    <div id="winScreen">
+        <h1 id="winText">KẾT QUẢ CHIẾN DỊCH</h1>
+        <div class="sub" id="winSub">Làng nào tiêu diệt hết nhà chính sẽ lên ngôi vương.</div>
+        <button onclick="location.reload()">CHIẾN ĐẤU LẠI</button>
+    </div>
+
+    <!-- Three.js via Importmap -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+    
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // ========== CẤU HÌNH GAME ==========
+        const CONFIG = {
+            MAP_SIZE: 140,
+            UNIT_CAP: 60,
+            SPAWN_INTERVAL: 3.5,
+            UNIT_SPEED: 3.2,
+            ATTACK_RANGE: 2.2,
+            ATTACK_DMG: 10,
+            ATTACK_SPEED: 1.0,
+            UNIT_HP: 60,
+            BASE_HP: 800,
+            FOG_DENSITY: 0.010,
+        };
+
+        // ========== TẠO TEXTURE ĐẤT GRID (Canvas Texture) ==========
+        function createGroundTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 512; canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            
+            // Nền xanh lá đậm
+            ctx.fillStyle = '#2d5016';
+            ctx.fillRect(0, 0, 512, 512);
+            
+            // Vẽ các ô lưới low poly
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+            ctx.lineWidth = 2;
+            const grid = 32;
+            for(let i=0; i<=512; i+=grid) {
+                ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 512); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(512, i); ctx.stroke();
+            }
+            
+            // Add some darker spots for organic look
+            for(let i=0; i<100; i++) {
+                const x = Math.random()*512;
+                const y = Math.random()*512;
+                const r = Math.random()*20 + 5;
+                const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
+                grad.addColorStop(0, 'rgba(0,0,0,0.2)');
+                grad.addColorStop(1, 'rgba(0,0,0,0)');
+                ctx.fillStyle = grad;
+                ctx.fillRect(x-r, y-r, r*2, r*2);
+            }
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+            texture.repeat.set(20, 20);
+            texture.anisotropy = 8;
+            return texture;
+        }
+
+        // ========== KHỞI TẠO THREE.JS ==========
+        const canvas = document.createElement('canvas');
+        document.body.prepend(canvas);
+        
+        const renderer = new THREE.WebGLRenderer({ 
+            canvas, antialias: false, powerPreference: "high-performance" 
+        });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.1;
+        
+        // [QUAN TRỌNG] Đặt màu nền xanh dương trời chuẩn cho scene
+        // Nếu có lỗi render, màn hình sẽ hiện màu xanh dương này thay vì đen
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb); 
+        scene.fog = new THREE.FogExp2(0x87ceeb, CONFIG.FOG_DENSITY);
+
+        // Camera RTS Style
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 55, 35);
+        camera.lookAt(0, 0, 0);
+
+        const controls = new OrbitControls(camera, canvas);
+        controls.enablePan = true;
+        controls.enableRotate = true;
+        controls.enableZoom = true;
+        controls.minPolarAngle = 0.2;
+        controls.maxPolarAngle = Math.PI / 2 - 0.05;
+        controls.minDistance = 15;
+        controls.maxDistance = 90;
+        controls.target.set(0, 0, 0);
+        controls.update();
+
+        // ========== ĐÈN (LIGHTING) ==========
+        // Đèn mặt trời (Warm sunlight)
+        const sunLight = new THREE.DirectionalLight(0xfff0c0, 1.0);
+        sunLight.position.set(50, 80, 30);
+        scene.add(sunLight);
+
+        // Đèn môi trường (Ambient)
+        const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+        scene.add(ambientLight);
+
+        // Đèn bán cầu (Hemisphere)
+        const hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x3a7d2b, 0.5);
+        scene.add(hemiLight);
+
+        // Đèn điểm trang trí cho các cơ sở
+        const redPointLight = new THREE.PointLight(0xff3333, 0.8, 100);
+        redPointLight.position.set(0, 5, -60);
+        scene.add(redPointLight);
+
+        const bluePointLight = new THREE.PointLight(0x3366ff, 0.8, 100);
+        bluePointLight.position.set(0, 5, 60);
+        scene.add(bluePointLight);
+
+        // ========== MATERIALS ==========
+        const Mat = {
+            ground: new THREE.MeshStandardMaterial({ 
+                map: createGroundTexture(), roughness: 0.95, metalness: 0.0 
+            }),
+            water: new THREE.MeshStandardMaterial({ 
+                color: 0x1565c0, roughness: 0.1, metalness: 0.3, transparent: true, opacity: 0.85, flatShading: true 
+            }),
+            baseRed: new THREE.MeshStandardMaterial({ color: 0xb71c1c, roughness: 0.6, flatShading: true, emissive: 0x440000, emissiveIntensity: 0.5 }),
+            baseBlue: new THREE.MeshStandardMaterial({ color: 0x0d47a1, roughness: 0.6, flatShading: true, emissive: 0x000044, emissiveIntensity: 0.5 }),
+            unitRed: new THREE.MeshStandardMaterial({ color: 0xd32f2f, roughness: 0.5, flatShading: true, emissive: 0x330000, emissiveIntensity: 0.2 }),
+            unitBlue: new THREE.MeshStandardMaterial({ color: 0x1976d2, roughness: 0.5, flatShading: true, emissive: 0x000033, emissiveIntensity: 0.2 }),
+            hpBarBg: new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide, transparent: true, opacity: 0.6, depthTest: false }),
+            hpBarRed: new THREE.MeshBasicMaterial({ color: 0xff1744, side: THREE.DoubleSide, depthTest: false }),
+            hpBarBlue: new THREE.MeshBasicMaterial({ color: 0x448aff, side: THREE.DoubleSide, depthTest: false }),
+            selectRing: new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthTest: false }),
+            laser: new THREE.MeshBasicMaterial({ color: 0xffeb3b, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false }),
+            particle: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false }),
+        };
+
+        // ========== QUẢN LÝ ĐỐI TƯỢNG ==========
+        const units = [];
+        const bases = [];
+        const particles = [];
+        const lasers = [];
+        let selectedUnits = [];
+        let gameOver = false;
+        const clock = new THREE.Clock();
+        let spawnTimerRed = 0, spawnTimerBlue = 0;
+
+        // ========== TẠO MAP ==========
+        function initMap() {
+            // 1. Đất
+            const ground = new THREE.Mesh(
+                new THREE.PlaneGeometry(CONFIG.MAP_SIZE, CONFIG.MAP_SIZE, 1, 1), 
+                Mat.ground
+            );
+            ground.rotation.x = -Math.PI / 2;
+            scene.add(ground);
+
+            // 2. Sông chia đôi bản đồ
+            const river = new THREE.Mesh(
+                new THREE.PlaneGeometry(CONFIG.MAP_SIZE, 14, 1, 1),
+                Mat.water
+            );
+            river.rotation.x = -Math.PI / 2;
+            river.position.y = 0.05;
+            scene.add(river);
+
+            // 3. Cây cối (InstancedMesh cực kỳ nhẹ)
+            const treeCount = 250;
+            const treeTrunkGeo = new THREE.CylinderGeometry(0.25, 0.4, 2.2, 5);
+            const treeLeafGeo = new THREE.ConeGeometry(1.2, 2.5, 5);
+            
+            const trunkMesh = new THREE.InstancedMesh(treeTrunkGeo, new THREE.MeshStandardMaterial({color:0x3e2723, flatShading:true}), treeCount);
+            const leafMesh = new THREE.InstancedMesh(treeLeafGeo, new THREE.MeshStandardMaterial({color:0x2e7d32, flatShading:true}), treeCount);
+            scene.add(trunkMesh); scene.add(leafMesh);
+            
+            const dummy = new THREE.Object3D();
+            for(let i=0; i<treeCount; i++) {
+                const side = Math.random() < 0.5 ? -1 : 1;
+                const x = (Math.random() - 0.5) * CONFIG.MAP_SIZE * 0.8;
+                const z = side * (8 + Math.random() * (CONFIG.MAP_SIZE/2 - 12));
+                const s = 0.7 + Math.random() * 0.5;
+                
+                dummy.position.set(x, 0, z);
+                dummy.scale.setScalar(s);
+                dummy.updateMatrix();
+                trunkMesh.setMatrixAt(i, dummy.matrix);
+                leafMesh.setMatrixAt(i, dummy.matrix);
+            }
+            trunkMesh.instanceMatrix.needsUpdate = true;
+            leafMesh.instanceMatrix.needsUpdate = true;
+
+            // 4. Houses / Bases
+            createBase(new THREE.Vector3(0, 0, -CONFIG.MAP_SIZE/2 + 12), 'red');
+            createBase(new THREE.Vector3(0, 0, CONFIG.MAP_SIZE/2 - 12), 'blue');
+        }
+
+        function createBase(pos, team) {
+            const group = new THREE.Group();
+            group.position.copy(pos);
+            
+            const body = new THREE.Mesh(new THREE.BoxGeometry(10, 7, 10), team === 'red' ? Mat.baseRed : Mat.baseBlue);
+            body.position.y = 3.5;
+            group.add(body);
+
+            const roof = new THREE.Mesh(new THREE.ConeGeometry(7, 4, 4), team === 'red' ? Mat.baseRed : Mat.baseBlue);
+            roof.position.y = 7 + 2;
+            roof.rotation.y = Math.PI / 4;
+            group.add(roof);
+
+            const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 12, 6), new THREE.MeshStandardMaterial({color:0x222, flatShading:true}));
+            pole.position.set(6, 6, 6);
+            group.add(pole);
+
+            const flagGeo = new THREE.PlaneGeometry(3, 2);
+            const flagMat = new THREE.MeshBasicMaterial({ 
+                color: team === 'red' ? 0xff0000 : 0x0000ff, 
+                side: THREE.DoubleSide, transparent: true, opacity: 0.9 
+            });
+            const flag = new THREE.Mesh(flagGeo, flagMat);
+            flag.position.set(6, 13, 6);
+            flag.rotation.y = -Math.PI/2;
+            group.add(flag);
+            flag.userData.wobble = Math.random() * 100;
+
+            const auraGeo = new THREE.RingGeometry(6, 8, 32);
+            const auraMat = new THREE.MeshBasicMaterial({ 
+                color: team === 'red' ? 0xff0000 : 0x0000ff, 
+                transparent: true, opacity: 0.15, side: THREE.DoubleSide, depthWrite: false 
+            });
+            const aura = new THREE.Mesh(auraGeo, auraMat);
+            aura.rotation.x = -Math.PI/2;
+            aura.position.y = 0.1;
+            group.add(aura);
+
+            scene.add(group);
+
+            bases.push({
+                mesh: group,
+                team: team,
+                hp: CONFIG.BASE_HP,
+                maxHp: CONFIG.BASE_HP,
+                spawnTimer: 0,
+                flagMesh: flag,
+                auraMesh: aura
+            });
+        }
+
+        // ========== HỆ THỐNG PARTICLES & LASERS ==========
+        function spawnLaser(startPos, endPos) {
+            const dir = new THREE.Vector3().subVectors(endPos, startPos);
+            const length = dir.length();
+            const mid = new THREE.Vector3().addVectors(startPos, endPos).multiplyScalar(0.5);
+            
+            const laserGeo = new THREE.PlaneGeometry(0.1, length);
+            const laser = new THREE.Mesh(laserGeo, Mat.laser);
+            laser.position.copy(mid);
+            laser.lookAt(endPos);
+            laser.rotateY(Math.PI/2);
+            
+            scene.add(laser);
+            lasers.push({ mesh: laser, life: 0.15 });
+        }
+
+        function spawnExplosion(pos, color = 0xffaa00) {
+            const count = 8;
+            for(let i=0; i<count; i++) {
+                const geo = new THREE.PlaneGeometry(0.5, 0.5);
+                const mat = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
+                const p = new THREE.Mesh(geo, mat);
+                p.position.copy(pos);
+                p.position.y = 0.5;
+                
+                const angle = Math.random() * Math.PI * 2;
+                const speed = 3 + Math.random() * 5;
+                p.userData.velocity = new THREE.Vector3(
+                    Math.cos(angle) * speed,
+                    2 + Math.random() * 3,
+                    Math.sin(angle) * speed
+                );
+                p.userData.life = 0.6;
+                p.userData.rotSpeed = (Math.random() - 0.5) * 3;
+                
+                scene.add(p);
+                particles.push(p);
+            }
+        }
+
+        // ========== TẠO LÍNH (UNIT) ==========
+        function createUnit(pos, team) {
+            if(units.filter(u=>u.team===team && u.state!=='dead').length >= CONFIG.UNIT_CAP) return null;
+
+            const group = new THREE.Group();
+            group.position.copy(pos);
+            
+            const bodyMat = team === 'red' ? Mat.unitRed : Mat.unitBlue;
+            const body = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.7, 1.4, 6), bodyMat);
+            body.position.y = 0.7;
+            group.add(body);
+
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 6), bodyMat);
+            head.position.y = 1.6;
+            group.add(head);
+
+            const legMat = new THREE.MeshStandardMaterial({color:0x222, flatShading:true});
+            const leg1 = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 1.0, 4), legMat);
+            leg1.position.set(-0.2, 0.3, 0.2);
+            const leg2 = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 1.0, 4), legMat);
+            leg2.position.set(0.2, 0.3, -0.2);
+            group.add(leg1); group.add(leg2);
+            group.userData.legs = [leg1, leg2];
+
+            const weapon = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 1.6, 4), new THREE.MeshStandardMaterial({color:0xffcc00, flatShading:true, emissive:0x332200}));
+            weapon.position.set(0.4, 1.3, 0.3);
+            weapon.rotation.z = -0.6;
+            group.add(weapon);
+
+            const hpBarBg = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.18), Mat.hpBarBg);
+            const hpBarFill = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.18), team === 'red' ? Mat.hpBarRed : Mat.hpBarBlue);
+            hpBarBg.position.y = 2.5;
+            hpBarFill.position.y = 2.51;
+            group.add(hpBarBg);
+            group.add(hpBarFill);
+
+            const ringGeo = new THREE.RingGeometry(0.6, 0.8, 16);
+            const ring = new THREE.Mesh(ringGeo, Mat.selectRing);
+            ring.rotation.x = -Math.PI/2;
+            ring.position.y = 0.05;
+            ring.visible = false;
+            group.add(ring);
+
+            scene.add(group);
+
+            const unit = {
+                mesh: group,
+                team: team,
+                hp: CONFIG.UNIT_HP,
+                maxHp: CONFIG.UNIT_HP,
+                speed: CONFIG.UNIT_SPEED + (Math.random()-0.2)*0.4,
+                state: 'idle',
+                target: null,
+                targetPos: null,
+                attackCooldown: 0,
+                hpBarFill: hpBarFill,
+                selectRing: ring,
+                legs: [leg1, leg2],
+                walkTime: Math.random() * 10,
+                velocity: new THREE.Vector3(),
+            };
+            
+            units.push(unit);
+            return unit;
+        }
+
+        // ========== LOGIC CẬP NHẬT ==========
+        function updateUnits(delta) {
+            if(gameOver) return;
+
+            bases.forEach(base => {
+                base.spawnTimer -= delta;
+                base.flagMesh.scale.x = 0.8 + Math.sin(performance.now()*0.002 + base.flagMesh.userData.wobble) * 0.2;
+                base.auraMesh.material.opacity = 0.1 + Math.sin(performance.now()*0.001) * 0.05;
+
+                if(base.spawnTimer <= 0 && units.filter(u=>u.team===base.team && u.state!=='dead').length < CONFIG.UNIT_CAP) {
+                    const spawnPos = base.mesh.position.clone();
+                    spawnPos.x += (Math.random()-0.5)*6;
+                    spawnPos.z += (base.team === 'red' ? 12 : -12) + (Math.random()-0.5)*2;
+                    createUnit(spawnPos, base.team);
+                    base.spawnTimer = CONFIG.SPAWN_INTERVAL;
+                }
+            });
+
+            const aliveUnits = units.filter(u => u.state !== 'dead');
+            const redUnits = aliveUnits.filter(u=>u.team==='red');
+            const blueUnits = aliveUnits.filter(u=>u.team==='blue');
+
+            aliveUnits.forEach(unit => {
+                if(unit.state === 'dead') return;
+                
+                unit.attackCooldown -= delta;
+                const isRed = unit.team === 'red';
+                const enemies = isRed ? blueUnits : redUnits;
+                const enemyBases = bases.filter(b=>b.team !== unit.team);
+
+                if(unit.state === 'idle' || unit.state === 'move') {
+                    if(unit.targetPos && !isRed) unit.targetPos = null;
+                    
+                    if(unit.targetPos) {
+                        const dist = unit.mesh.position.distanceTo(unit.targetPos);
+                        if(dist < 1.5) { unit.targetPos = null; unit.state = 'idle'; }
+                        else { unit.state = 'move'; }
+                    } else {
+                        let closestDist = Infinity;
+                        let closestTarget = null;
+                        
+                        enemies.forEach(e => {
+                            const d = unit.mesh.position.distanceTo(e.mesh.position);
+                            if(d < closestDist) { closestDist = d; closestTarget = e; }
+                        });
+                        enemyBases.forEach(b => {
+                            const d = unit.mesh.position.distanceTo(b.mesh.position);
+                            if(d < closestDist) { closestDist = d; closestTarget = b; }
+                        });
+
+                        if(closestTarget) {
+                            unit.target = closestTarget;
+                            const targetRange = closestTarget.maxHp > 100 ? 5.0 : CONFIG.ATTACK_RANGE;
+                            if(closestDist < targetRange) {
+                                unit.state = 'attack';
+                            } else {
+                                unit.state = 'move';
+                                unit.targetPos = closestTarget.mesh.position.clone();
+                            }
+                        }
+                    }
+                }
+
+                if(unit.state === 'move' && unit.targetPos) {
+                    moveUnit(unit, unit.targetPos, delta);
+                } 
+                else if(unit.state === 'attack' && unit.target) {
+                    if(unit.target.hp !== undefined && unit.target.hp <= 0) { unit.target = null; unit.state = 'idle'; return; }
+                    if(unit.target.mesh && !scene.getObjectById(unit.target.mesh.id)) { unit.target = null; unit.state = 'idle'; return; }
+
+                    const targetPos = unit.target.mesh.position;
+                    const dist = unit.mesh.position.distanceTo(targetPos);
+                    const targetRange = unit.target.maxHp > 100 ? 5.0 : CONFIG.ATTACK_RANGE;
+
+                    if(dist > targetRange) {
+                        unit.state = 'move';
+                        unit.targetPos = targetPos.clone();
+                    } else {
+                        const dir = new THREE.Vector3().subVectors(targetPos, unit.mesh.position).normalize();
+                        dir.y = 0;
+                        if(dir.lengthSq() > 0.001) unit.mesh.lookAt(targetPos.x, unit.mesh.position.y, targetPos.z);
+                        
+                        if(unit.attackCooldown <= 0) {
+                            const bulletStart = unit.mesh.position.clone();
+                            bulletStart.y = 1.2;
+                            const bulletEnd = targetPos.clone();
+                            if(targetPos.maxHp > 100) bulletEnd.y = 4; else bulletEnd.y = 1.2;
+                            
+                            spawnLaser(bulletStart, bulletEnd);
+                            spawnExplosion(bulletEnd, unit.team === 'red' ? 0xff5252 : 0x448aff);
+                            
+                            dealDamage(unit.target, CONFIG.ATTACK_DMG);
+                            unit.attackCooldown = CONFIG.ATTACK_SPEED;
+                            unit.mesh.position.addScaledVector(dir, -0.3);
+                        }
+                    }
+                }
+
+                if(unit.state === 'idle' || unit.state === 'move') {
+                    unit.walkTime += delta * (unit.state === 'move' ? 12 : 2);
+                    const bob = Math.sin(unit.walkTime) * 0.05;
+                    unit.mesh.position.y = bob;
+                    
+                    const legOffset = Math.sin(unit.walkTime) * 0.4;
+                    unit.legs[0].rotation.x = legOffset;
+                    unit.legs[1].rotation.x = -legOffset;
+                } else {
+                    unit.legs[0].rotation.x = 0;
+                    unit.legs[1].rotation.x = 0;
+                }
+
+                if(unit.hp < unit.maxHp) {
+                    unit.hpBarFill.scale.x = Math.max(0, unit.hp / unit.maxHp);
+                    unit.hpBarFill.position.x = (unit.hpBarFill.scale.x - 1) * 0.6;
+                    unit.hpBarFill.visible = true;
+                } else {
+                    unit.hpBarFill.visible = false;
+                }
+                unit.hpBarFill.lookAt(camera.position);
+                unit.hpBarFill.rotateY(Math.PI);
+            });
+
+            // Update particles
+            for(let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.userData.life -= delta;
+                if(p.userData.life <= 0) {
+                    scene.remove(p);
+                    particles.splice(i, 1);
+                    continue;
+                }
+                p.position.addScaledVector(p.userData.velocity, delta);
+                p.userData.velocity.y -= 5 * delta;
+                p.material.opacity = p.userData.life / 0.6;
+                p.rotation.z += p.userData.rotSpeed * delta;
+            }
+
+            // Update lasers
+            for(let i = lasers.length - 1; i >= 0; i--) {
+                const l = lasers[i];
+                l.life -= delta;
+                if(l.life <= 0) {
+                    scene.remove(l.mesh);
+                    lasers.splice(i, 1);
+                } else {
+                    l.mesh.material.opacity = l.life / 0.15;
+                }
+            }
+        }
+
+        function moveUnit(unit, targetPos, delta) {
+            const pos = unit.mesh.position;
+            const dir = new THREE.Vector3().subVectors(targetPos, pos).normalize();
+            dir.y = 0;
+
+            const separation = new THREE.Vector3();
+            const sepRadius = 1.2;
+            units.forEach(other => {
+                if(other === unit || other.state === 'dead') return;
+                const diff = new THREE.Vector3().subVectors(pos, other.mesh.position);
+                const dist = diff.length();
+                if(dist < sepRadius && dist > 0.01) {
+                    separation.addScaledVector(diff.normalize(), (sepRadius - dist) * 1.5);
+                }
+            });
+
+            const moveVec = new THREE.Vector3().addVectors(dir, separation.clampLength(0, unit.speed * 0.5)).normalize();
+            pos.addScaledVector(moveVec, unit.speed * delta);
+
+            const half = CONFIG.MAP_SIZE/2 - 3;
+            pos.x = THREE.MathUtils.clamp(pos.x, -half, half);
+            pos.z = THREE.MathUtils.clamp(pos.z, -half, half);
+
+            if(moveVec.lengthSq() > 0.001) {
+                const targetRot = Math.atan2(moveVec.x, moveVec.z);
+                unit.mesh.rotation.y = THREE.MathUtils.lerp(unit.mesh.rotation.y, targetRot, 0.15);
+            }
+        }
+
+        function dealDamage(target, amount) {
+            target.hp -= amount;
+            if(target.hp <= 0) {
+                target.hp = 0;
+                if(target.mesh) {
+                    target.state = 'dead';
+                    target.mesh.visible = false;
+                    target.hpBarFill.visible = false;
+                    target.selectRing.visible = false;
+                    selectedUnits = selectedUnits.filter(u => u !== target);
+                } else {
+                    gameOver = true;
+                    const winner = target.team === 'red' ? 'LÀNG TRUNG Ý' : 'LÀNG TRUNG THÀNH / TRUNG CHÍNH';
+                    document.getElementById('winText').innerText = `${winner} CHIẾN THẮNG!`;
+                    document.getElementById('winSub').innerText = target.team === 'red' 
+                        ? "Trung Ý trung thành bảo vệ được Gottland." 
+                        : "Trung Thành và Trung Chính trung nghĩa chiếm lĩnh chiến trường.";
+                    document.getElementById('winScreen').style.display = 'flex';
+                }
+            }
+        }
+
+        // ========== MINIMAP ==========
+        function renderMinimap() {
+            const ctx = miniCanvas.getContext('2d');
+            const w = miniCanvas.width, h = miniCanvas.height;
+            ctx.clearRect(0,0,w,h);
+            
+            ctx.fillStyle = '#0f172a'; ctx.fillRect(0,0,w,h);
+            
+            ctx.fillStyle = '#1e3a8a'; ctx.fillRect(0, h/2 - 6, w, 12);
+            
+            bases.forEach(b => {
+                const x = (b.mesh.position.x + CONFIG.MAP_SIZE/2) * (180 / CONFIG.MAP_SIZE);
+                const y = (b.mesh.position.z + CONFIG.MAP_SIZE/2) * (180 / CONFIG.MAP_SIZE);
+                ctx.fillStyle = b.team === 'red' ? '#b71c1c' : '#0d47a1';
+                ctx.fillRect(x-6, y-6, 12, 12);
+                
+                ctx.fillStyle = '#000'; ctx.fillRect(x-6, y-10, 12, 2);
+                ctx.fillStyle = '#4caf50'; ctx.fillRect(x-6, y-10, 12 * (b.hp/b.maxHp), 2);
+            });
+            
+            units.forEach(u => {
+                if(u.state === 'dead') return;
+                const x = (u.mesh.position.x + CONFIG.MAP_SIZE/2) * (180 / CONFIG.MAP_SIZE);
+                const y = (u.mesh.position.z + CONFIG.MAP_SIZE/2) * (180 / CONFIG.MAP_SIZE);
+                ctx.fillStyle = u.team === 'red' ? '#ef5350' : '#42a5f5';
+                ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI*2); ctx.fill();
+            });
+            
+            const camX = (camera.position.x + CONFIG.MAP_SIZE/2) * (180 / CONFIG.MAP_SIZE);
+            const camZ = (camera.position.z + CONFIG.MAP_SIZE/2) * (180 / CONFIG.MAP_SIZE);
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.arc(camX, camZ, 35, 0, Math.PI*2); ctx.stroke();
+        }
+
+        // ========== INPUT HANDLING ==========
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        function getMouseWorldPos(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            
+            const groundPlane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+            const intersect = new THREE.Vector3();
+            raycaster.ray.intersectPlane(groundPlane, intersect);
+            return intersect;
+        }
+
+        window.addEventListener('pointerdown', (e) => {
+            if(e.target.id === 'winScreen') return;
+            
+            const worldPos = getMouseWorldPos(e);
+            
+            if(e.button === 0) { // Left Click
+                raycaster.setFromCamera(mouse, camera);
+                const pickableUnits = units.filter(u => u.team === 'red' && u.state !== 'dead').map(u => u.mesh);
+                const intersects = raycaster.intersectObjects(pickableUnits, true);
+                
+                if(e.shiftKey || e.ctrlKey) {
+                    if(intersects.length > 0) {
+                        const unit = units.find(u => u.mesh === intersects[0].object.parent || u.mesh === intersects[0].object);
+                        if(unit && !selectedUnits.includes(unit)) selectUnit(unit, true);
+                    }
+                } else {
+                    clearSelection();
+                    if(intersects.length > 0) {
+                        const unit = units.find(u => u.mesh === intersects[0].object.parent || u.mesh === intersects[0].object);
+                        if(unit) selectUnit(unit);
+                    }
+                }
+            } else if(e.button === 2) { // Right Click -> Move Command
+                e.preventDefault();
+                if(selectedUnits.length > 0) {
+                    selectedUnits.forEach((u, i) => {
+                        const offset = new THREE.Vector3((i%5-2)*1.8, 0, Math.floor(i/5)*1.8);
+                        u.targetPos = worldPos.clone().add(offset);
+                        u.target = null;
+                        u.state = 'move';
+                    });
+                }
+            }
+        });
+
+        window.addEventListener('contextmenu', e => e.preventDefault());
+
+        function selectUnit(unit, keepPrevious=false) {
+            if(!keepPrevious) clearSelection();
+            selectedUnits.push(unit);
+            unit.selectRing.visible = true;
+        }
+        function clearSelection() {
+            selectedUnits.forEach(u => u.selectRing.visible = false);
+            selectedUnits = [];
+        }
+
+        // Keyboard Camera Move
+        const keyState = {};
+        window.addEventListener('keydown', e => { keyState[e.code] = true; });
+        window.addEventListener('keyup', e => { keyState[e.code] = false; });
+
+        function handleKeyboard(delta) {
+            const speed = 35 * delta;
+            const forward = new THREE.Vector3();
+            camera.getWorldDirection(forward);
+            forward.y = 0; forward.normalize();
+            const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0,1,0));
+            
+            if(keyState['KeyW'] || keyState['ArrowUp']) controls.target.addScaledVector(forward, -speed);
+            if(keyState['KeyS'] || keyState['ArrowDown']) controls.target.addScaledVector(forward, speed);
+            if(keyState['KeyA'] || keyState['ArrowLeft']) controls.target.addScaledVector(right, -speed);
+            if(keyState['KeyD'] || keyState['ArrowRight']) controls.target.addScaledVector(right, speed);
+            
+            const half = CONFIG.MAP_SIZE/2;
+            controls.target.x = THREE.MathUtils.clamp(controls.target.x, -half, half);
+            controls.target.z = THREE.MathUtils.clamp(controls.target.z, -half, half);
+            controls.update();
+        }
+
+        // ========== UI UPDATE ==========
+        function updateUI() {
+            const redBase = bases.find(b=>b.team==='red');
+            const blueBase = bases.find(b=>b.team==='blue');
+            const redUnits = units.filter(u=>u.team==='red' && u.state!=='dead');
+            const blueUnits = units.filter(u=>u.team==='blue' && u.state!=='dead');
+            
+            document.getElementById('hpRed').innerText = `${Math.ceil(redBase.hp/redBase.maxHp*100)}%`;
+            document.getElementById('hpBlue').innerText = `${Math.ceil(blueBase.hp/blueBase.maxHp*100)}%`;
+            document.getElementById('countRed').innerText = redUnits.length;
+            document.getElementById('countBlue').innerText = blueUnits.length;
+            document.getElementById('spawnBarRed').style.width = `${(1 - redBase.spawnTimer/CONFIG.SPAWN_INTERVAL)*100}%`;
+        }
+
+        // ========== MAIN LOOP ==========
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = Math.min(clock.getDelta(), 0.1);
+            
+            if(!gameOver) {
+                handleKeyboard(delta);
+                updateUnits(delta);
+                updateUI();
+                renderMinimap();
+            }
+            
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Init
+        initMap();
+        animate();
+    </script>
+</body>
+</html>
